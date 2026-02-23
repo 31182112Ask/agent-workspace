@@ -16,3 +16,10 @@ assert "id" in df.columns
 assert df["id"].isna().sum() == 0
 print("acceptance-ok")
 PY
+CONSTRAINTS
+
+Do not add external dependencies beyond the Python standard library and pandas.
+
+Keep the script runnable in Colab.
+
+Write logs to logs/.
