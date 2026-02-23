@@ -27,7 +27,7 @@ AUTO_GIT_SYNC = os.environ.get("AUTO_GIT_SYNC", "0") == "1"
 SYNC_EACH_ROUND = os.environ.get("SYNC_EACH_ROUND", "0") == "1"
 
 # 預設就開 JSON + full-auto + danger-full-access（避免 Colab Landlock 問題）
-DEFAULT_CODEX_FLAGS = "--full-auto --sandbox danger-full-access --ephemeral --json"
+DEFAULT_CODEX_FLAGS = "--dangerously-bypass-approvals-and-sandbox --ephemeral --json"
 CODEX_FLAGS = shlex.split(os.environ.get("CODEX_FLAGS", DEFAULT_CODEX_FLAGS))
 USE_CODEX_JSON = ("--json" in CODEX_FLAGS) or (os.environ.get("USE_CODEX_JSON", "1") == "1")
 
