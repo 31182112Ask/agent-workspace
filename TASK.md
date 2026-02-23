@@ -1,111 +1,105 @@
 # TASK.md
 
 ## TASK_NAME
-<任務名稱，例如：Build CSV cleaner / Add login endpoint / Refactor parser module>
+Print "hey" in the runtime environment
 
 ## GOAL
-<用 2-5 句清楚描述最終要完成的功能或結果。>
-<說明輸入是什麼、輸出是什麼、成功後使用者可以做什麼。>
-<若有目標檔案/模組，請明確寫出路徑，例如 src/<module>.py 或 app/<feature>.ts>
+Create the smallest possible runnable program that outputs exactly `hey` (lowercase, no extra text) in the current runtime environment. The implementation should be placed at `src/say_hey.py`. The agent should be able to run the program from the repository root and produce the expected output reliably.
 
 ### Goal Details
-- Primary objective: <主要目標>
-- In-scope: <本次要做的內容>
-- Out-of-scope: <本次不做的內容，避免代理發散>
+- Primary objective: Implement a script that prints `hey`
+- In-scope: Create/update `src/say_hey.py`, create minimal supporting folders if missing
+- Out-of-scope: Any unrelated refactor, dependency installation, framework setup
 - Expected output artifacts:
-  - <artifacts/<file1>>
-  - <artifacts/<file2>>
+  - `artifacts/hey_output.txt`
 - Target files to modify (if known):
-  - <src/...>
-  - <tests/...>
+  - `src/say_hey.py`
 
 ## ACCEPTANCE
 The task is complete only when **all** checks below pass.
 
 ### Acceptance Criteria (Human-readable)
-- [ ] <功能條件 1，例如：Script runs without error>
-- [ ] <功能條件 2，例如：Output file is generated at artifacts/output.csv>
-- [ ] <品質條件，例如：No failing tests>
-- [ ] <格式/性能條件（可選）>
+- [ ] Running `python src/say_hey.py` succeeds without errors
+- [ ] Program output is exactly `hey`
+- [ ] Output is captured to `artifacts/hey_output.txt`
+- [ ] No extra dependencies are introduced
 
 ### Acceptance Commands (Machine-runnable)
 Run all commands from the repository root. All commands below must exit with code 0.
 
 ```bash
-# 1) Setup / install (if needed)
-<安裝命令，例如：pip install -r requirements.txt>
+# 1) Prepare folders
+mkdir -p src artifacts logs
 
-# 2) Main execution command
-<主執行命令，例如：python src/<script>.py>
+# 2) Main execution command (capture output)
+python src/say_hey.py > artifacts/hey_output.txt
 
-# 3) Tests / validation
-<測試命令，例如：pytest -q tests/<test_file>.py>
-
-# 4) Output assertions (example using inline Python)
+# 3) Output assertions
 python - <<'PY'
 from pathlib import Path
-# Replace with real checks:
-target = Path("<驗收輸出檔案路徑，例如 artifacts/output.csv>")
-assert target.exists(), f"Missing file: {target}"
+
+p = Path("artifacts/hey_output.txt")
+assert p.exists(), "Missing artifacts/hey_output.txt"
+content = p.read_text(encoding="utf-8")
+# Allow trailing newline, but the content should be exactly 'hey' after stripping line endings
+assert content.strip("\r\n") == "hey", f"Unexpected output: {content!r}"
 print("acceptance-ok")
 PY
 ```
 
 ### Expected Acceptance Evidence
 When completed, the agent should be able to show:
-- Command outputs proving success (or logs under `logs/`)
-- Generated files under `artifacts/`
-- A brief summary of what changed
+- Successful command output containing `acceptance-ok`
+- Generated file `artifacts/hey_output.txt`
+- A brief summary of created/modified file(s)
 
 ## GUIDANCE_FOR_AGENT
 Follow the guidance below while implementing this task.
 
 ### Implementation Guidance
 1. Read this `TASK.md` fully before making changes.
-2. Start with the **smallest working change** that moves the task forward.
-3. Prefer editing existing files over creating many new files unless necessary.
-4. Run checks immediately after each meaningful change.
-5. If a check fails, fix the root cause before moving on.
-6. Keep changes localized and avoid unrelated refactors.
-7. If blocked, state the blocker precisely and propose the next action.
+2. Create `src/say_hey.py` if it does not exist.
+3. Keep the implementation minimal (one file is enough).
+4. Output exactly `hey` and nothing else.
+5. Run the acceptance commands after implementation.
+6. If acceptance fails, fix the issue and rerun checks.
+7. Do not add dependencies or unrelated files.
 
 ### Suggested Work Loop
-1. Understand goal and constraints
-2. Inspect current codebase
-3. Implement minimal change
-4. Run acceptance commands
-5. Fix failures
-6. Repeat until all acceptance checks pass
+1. Inspect whether `src/say_hey.py` exists
+2. Implement minimal script to print `hey`
+3. Run acceptance commands
+4. Fix any mismatch (case sensitivity, extra spaces, encoding)
+5. Repeat until all checks pass
 
 ### Common Pitfalls to Avoid
-- Do not stop after partial implementation
-- Do not claim success without running acceptance commands
-- Do not introduce new dependencies unless explicitly allowed
-- Do not modify unrelated modules/files
+- Printing `Hey` / `HEY` (wrong case)
+- Printing extra spaces or punctuation (e.g. `hey!`)
+- Adding debug output
+- Forgetting to create `artifacts/` directory
+- Claiming completion before running acceptance commands
 
 ## CONTEXT (Optional but Recommended)
 ### Background
-<補充背景資訊，例如：這個功能用於哪個流程、與哪些模組互動>
+This is a smoke test task used to validate the agent loop (edit -> run -> acceptance) inside the temporary runtime environment.
 
 ### Inputs
 - Input files/data:
-  - <<path/to/input1>>
-  - <<path/to/input2>>
+  - None
 - Input format assumptions:
-  - <例如：CSV has headers id,name,value>
+  - None
 
 ### Outputs
 - Required outputs:
-  - <<path/to/output1>>
+  - `artifacts/hey_output.txt`
 - Output format expectations:
-  - <例如：UTF-8 CSV with header row>
+  - UTF-8 text file containing `hey` (newline allowed)
 
 ## CONSTRAINTS
-- Runtime environment: <例如：Colab Python 3.10 / Node 20>
-- Dependency policy: <例如：Only stdlib + pandas>
-- Performance limit (optional): <例如：Process 10k rows under 10s>
-- Code style constraints (optional): <例如：Keep function names snake_case>
-- Safety constraints (optional): <例如：Do not delete original input files>
+- Runtime environment: Python in Colab (or equivalent)
+- Dependency policy: Standard library only (no installs)
+- Code style constraints: Keep implementation minimal and readable
+- Safety constraints: Do not modify unrelated files
 
 ## DELIVERABLES
 At the end of the task, provide:
@@ -116,8 +110,8 @@ At the end of the task, provide:
 5. Remaining issues (if any)
 
 ## PLACEHOLDER CHECKLIST (Edit Before Running)
-- [ ] Replace all `<佔位符>`
-- [ ] Confirm target file paths are correct
-- [ ] Confirm acceptance commands are runnable in Colab
-- [ ] Confirm expected output artifact paths are listed
-- [ ] Confirm constraints reflect this task
+- [x] This task has no placeholders
+- [x] Target file path is correct (`src/say_hey.py`)
+- [x] Acceptance commands are runnable in Colab
+- [x] Expected output artifact path is listed
+- [x] Constraints reflect this task
