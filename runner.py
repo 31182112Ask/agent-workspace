@@ -40,7 +40,7 @@ ENABLE_STARTUP_SELFCHECK = True
 # Git Auto Push Config
 # =========================
 AUTO_PUSH_ON_DONE = True
-GIT_REMOTE_URL = "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"
+GIT_REMOTE_URL = "https://github.com/31182112Ask/agent-workspace.git"
 GIT_BRANCH = "main"
 
 # Git commit author（你提供的資訊）
@@ -48,7 +48,7 @@ GIT_AUTHOR_NAME = "021097xxx"
 GIT_AUTHOR_EMAIL = "021097xxx@gmail.com"
 
 # 直接寫死 token（請替換為你的實際 GitHub PAT）
-GITHUB_TOKEN = "REPLACE_WITH_YOUR_GITHUB_PAT"
+GITHUB_TOKEN = "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"
 
 # 提交訊息前綴
 GIT_COMMIT_PREFIX = "auto(task)"
