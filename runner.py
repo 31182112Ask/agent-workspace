@@ -4,11 +4,11 @@ import sys
 import shlex
 import json
 import time
-import base64
+
 import subprocess
 from pathlib import Path
 from datetime import datetime
-
+from urllib.parse import quote
 # =========================
 # Config
 # =========================
@@ -345,17 +345,23 @@ def git_commit_and_push(round_idx: int):
         return False, f"git commit failed. See {push_log_path.name}"
 
     # push（用 extraheader，不把 token 寫入 remote URL）
-    auth_raw = f"x-access-token:{token}".encode("utf-8")
-    auth_b64 = base64.b64encode(auth_raw).decode("utf-8")
+    safe_token = quote(token, safe="")
+    auth_push_url = GIT_REMOTE_URL.replace(
+        "https://",
+        f"https://x-access-token:{safe_token}@",
+        1,
+    )
+    
     push_cmd = [
         "git",
-        "-c", f"http.https://github.com/.extraheader=AUTHORIZATION: basic {auth_b64}",
         "push",
-        "-u", "origin", f"HEAD:{GIT_BRANCH}",
+        "-u",
+        auth_push_url,
+        f"HEAD:{GIT_BRANCH}",
     ]
     r = run_capture(push_cmd, cwd=REPO_DIR, timeout=180)
-
-    logs.append("[push] git push via http.extraheader (token hidden)")
+    
+    logs.append("[push] git push via authenticated URL (token hidden in log)")
     logs.append(f"[push stdout]\n{r.stdout}")
     logs.append(f"[push stderr]\n{r.stderr}")
 
