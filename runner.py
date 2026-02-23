@@ -48,7 +48,7 @@ GIT_AUTHOR_NAME = "021097xxx"
 GIT_AUTHOR_EMAIL = "021097xxx@gmail.com"
 
 # 直接寫死 token（請替換為你的實際 GitHub PAT）
-GITHUB_TOKEN = "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"
+GITHUB_TOKEN = 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
 
 # 提交訊息前綴
 GIT_COMMIT_PREFIX = "auto(task)"
