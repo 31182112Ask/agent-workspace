@@ -40,7 +40,7 @@ ENABLE_STARTUP_SELFCHECK = True
 # Git Auto Push Config
 # =========================
 AUTO_PUSH_ON_DONE = True
-GIT_REMOTE_URL = "https://github.com/31182112Ask/agent-workspace.git"
+GIT_REMOTE_URL = "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"
 GIT_BRANCH = "main"
 
 # Git commit author（你提供的資訊）
