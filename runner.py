@@ -44,7 +44,7 @@ GIT_REMOTE_URL = "https://github.com/31182112Ask/agent-workspace.git"
 GIT_BRANCH = "main"
 
 # Git commit author（你提供的資訊）
-GIT_AUTHOR_NAME = "021097xxx"
+GIT_AUTHOR_NAME = "31182112Ask"
 GIT_AUTHOR_EMAIL = "021097xxx@gmail.com"
 
 # 直接寫死 token（請替換為你的實際 GitHub PAT）
