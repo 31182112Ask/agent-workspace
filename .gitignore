@@ -1,0 +1,11 @@
+%cd /content/work/agent-workspace
+
+cat > .gitignore <<'EOF'
+# Runtime outputs
+logs/
+artifacts/
+
+# Python cache
+__pycache__/
+*.pyc
+EOF
