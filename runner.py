@@ -26,10 +26,14 @@ SLEEP_BETWEEN_ROUNDS = int(os.environ.get("SLEEP_BETWEEN_ROUNDS", "2"))
 AUTO_GIT_SYNC = os.environ.get("AUTO_GIT_SYNC", "0") == "1"
 SYNC_EACH_ROUND = os.environ.get("SYNC_EACH_ROUND", "0") == "1"
 
-# 預設就開 JSON + full-auto + danger-full-access（避免 Colab Landlock 問題）
+# 關鍵：不要用 --full-auto（它會走 Linux sandbox / Landlock）
+# 直接使用無 approvals / 無 sandbox 模式，避免 Colab 的 Landlock 問題
 DEFAULT_CODEX_FLAGS = "--dangerously-bypass-approvals-and-sandbox --ephemeral --json"
 CODEX_FLAGS = shlex.split(os.environ.get("CODEX_FLAGS", DEFAULT_CODEX_FLAGS))
 USE_CODEX_JSON = ("--json" in CODEX_FLAGS) or (os.environ.get("USE_CODEX_JSON", "1") == "1")
+
+# 啟動時先做 Codex shell 自檢（建議開啟）
+ENABLE_STARTUP_SELFCHECK = os.environ.get("ENABLE_STARTUP_SELFCHECK", "1") == "1"
 
 TASK_FILE = REPO_DIR / "TASK.md"
 AGENTS_FILE = REPO_DIR / "AGENTS.md"
@@ -106,7 +110,7 @@ def run_stream(cmd, cwd=None, log_path=None, prefix="", env=None, shell=False, t
                     f.flush()
 
             if p.poll() is not None:
-                # process ended; flush remaining
+                # process ended; flush remaining buffered output
                 remainder = p.stdout.read()
                 if remainder:
                     for extra in remainder.splitlines(True):
@@ -198,16 +202,35 @@ def save_git_patch(round_idx: int):
 
 
 def print_repo_changes():
+    """
+    兼容新檔案（untracked）與已追蹤修改。
+    """
     if not git_is_repo():
         print("[runner] not a git repo; skipping git change summary")
         return
-    r1 = run_capture(["git", "status", "--short"], cwd=REPO_DIR, timeout=30)
-    r2 = run_capture(["git", "diff", "--name-only"], cwd=REPO_DIR, timeout=30)
+
+    r_status = run_capture(["git", "status", "--short"], cwd=REPO_DIR, timeout=30)
+    r_tracked = run_capture(["git", "diff", "--name-only"], cwd=REPO_DIR, timeout=30)
+    r_untracked = run_capture(["git", "ls-files", "--others", "--exclude-standard"], cwd=REPO_DIR, timeout=30)
 
     print("[runner] git status --short")
-    print((r1.stdout or "").strip() or "(clean)")
-    print("[runner] changed files")
-    print((r2.stdout or "").strip() or "(none)")
+    print((r_status.stdout or "").strip() or "(clean)")
+
+    tracked = [x for x in (r_tracked.stdout or "").splitlines() if x.strip()]
+    untracked = [x for x in (r_untracked.stdout or "").splitlines() if x.strip()]
+    all_changed = []
+    seen = set()
+    for p in tracked + untracked:
+        if p not in seen:
+            seen.add(p)
+            all_changed.append(p)
+
+    print("[runner] changed files (tracked + untracked)")
+    if all_changed:
+        for p in all_changed:
+            print(p)
+    else:
+        print("(none)")
 
 
 # =========================
@@ -281,9 +304,8 @@ def parse_coding_events_from_jsonl(jsonl_text: str):
                 event_lines.append(f"[{t}] agent_message :: {text[:300]}")
 
             elif item_type == "reasoning":
-                # 可以保留簡短摘要
                 txt = (item.get("text") or "").replace("\n", " ")
-                event_lines.append(f"[{t}] reasoning :: {txt[:160]}")
+                event_lines.append(f"[{t}] reasoning :: {txt[:180]}")
 
             elif item_type in {"command_execution", "command"}:
                 cmd = item.get("command") or item.get("input") or "<command>"
@@ -306,6 +328,39 @@ def parse_coding_events_from_jsonl(jsonl_text: str):
         event_lines.append(f"[{t or 'unknown'}]")
 
     return status_tag, event_lines
+
+
+# =========================
+# Codex startup self-check
+# =========================
+def codex_shell_selfcheck():
+    """
+    啟動前驗證 Codex 能在當前環境執行 shell 指令。
+    """
+    selfcheck_log = LOG_DIR / f"startup-codex-selfcheck-{timestamp()}.log"
+    # 用固定旗標做測試，避免使用者自訂 flags 把自檢搞壞
+    test_cmd = [
+        "codex",
+        "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--ephemeral",
+        "--json",
+        "pwd && ls -la && test -f TASK.md && echo codex-shell-ok",
+    ]
+    print("[runner] startup self-check: codex shell access")
+    rc, out = run_stream(
+        test_cmd,
+        cwd=REPO_DIR,
+        log_path=selfcheck_log,
+        prefix="[selfcheck] ",
+        timeout=120,
+    )
+    ok = (rc == 0) and ("codex-shell-ok" in (out or ""))
+    if not ok:
+        print("[runner] Codex shell self-check failed. Stop early.")
+        print(f"[runner] See log: {selfcheck_log.name}")
+        sys.exit(1)
+    print("[runner] startup self-check passed")
 
 
 # =========================
@@ -427,6 +482,10 @@ def main():
     print(f"[runner] CODEX_FLAGS={' '.join(CODEX_FLAGS)}")
     print(f"[runner] AUTO_GIT_SYNC={AUTO_GIT_SYNC} SYNC_EACH_ROUND={SYNC_EACH_ROUND}")
 
+    # 啟動前檢查 Codex shell 執行能力（很重要，避免空轉）
+    if ENABLE_STARTUP_SELFCHECK:
+        codex_shell_selfcheck()
+
     # 可選：啟動前同步一次（非破壞）
     if AUTO_GIT_SYNC:
         ok, sync_log = git_sync_non_destructive()
@@ -474,12 +533,11 @@ def main():
         if codex_result["sandbox_blocked"]:
             print("❌ Sandbox execution is blocked (Landlock).")
             print("[runner] Detected sandbox blocker in Codex output. Stopping early.")
-            print("[runner] Suggested fix: use --sandbox danger-full-access (already set by default in this script).")
-            print("[runner] If it still happens, run one direct test:")
-            print("        codex exec --full-auto --sandbox danger-full-access --ephemeral --json \"pwd && ls -la && cat TASK.md\"")
+            print("[runner] Suggested direct test:")
+            print('        codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral --json "pwd && ls -la && cat TASK.md"')
             break
 
-        # 4) 跑客觀驗收
+        # 4) 跑客觀驗收（最終裁決）
         acc_ok, acc_info, acc_log = run_acceptance(task_text, i)
         if acc_ok is True:
             print("✅ ACCEPTANCE PASSED")
