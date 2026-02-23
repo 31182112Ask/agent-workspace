@@ -4,6 +4,7 @@ import sys
 import shlex
 import json
 import time
+import base64
 import subprocess
 from pathlib import Path
 from datetime import datetime
@@ -11,29 +12,49 @@ from datetime import datetime
 # =========================
 # Config
 # =========================
-REPO_DIR = Path(os.environ.get("REPO_DIR", "/content/work/agent-workspace"))
+REPO_DIR = Path("/content/work/agent-workspace")
 LOG_DIR = REPO_DIR / "logs"
 ARTIFACT_DIR = REPO_DIR / "artifacts"
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_ROUNDS = int(os.environ.get("MAX_ROUNDS", "8"))
-ROUND_TIMEOUT_SEC = int(os.environ.get("ROUND_TIMEOUT_SEC", "1800"))  # per codex/acceptance phase
-SLEEP_BETWEEN_ROUNDS = int(os.environ.get("SLEEP_BETWEEN_ROUNDS", "2"))
+MAX_ROUNDS = 8
+ROUND_TIMEOUT_SEC = 1800  # per codex/acceptance phase
+SLEEP_BETWEEN_ROUNDS = 2
 
 # 建議預設關閉自動 git 同步，避免每輪覆蓋模型剛做的修改
-AUTO_GIT_SYNC = os.environ.get("AUTO_GIT_SYNC", "0") == "1"
-SYNC_EACH_ROUND = os.environ.get("SYNC_EACH_ROUND", "0") == "1"
+AUTO_GIT_SYNC = False
+SYNC_EACH_ROUND = False
 
 # 關鍵：不要用 --full-auto（它會走 Linux sandbox / Landlock）
 # 直接使用無 approvals / 無 sandbox 模式，避免 Colab 的 Landlock 問題
 DEFAULT_CODEX_FLAGS = "--dangerously-bypass-approvals-and-sandbox --ephemeral --json"
-CODEX_FLAGS = shlex.split(os.environ.get("CODEX_FLAGS", DEFAULT_CODEX_FLAGS))
-USE_CODEX_JSON = ("--json" in CODEX_FLAGS) or (os.environ.get("USE_CODEX_JSON", "1") == "1")
+CODEX_FLAGS = shlex.split(DEFAULT_CODEX_FLAGS)
+USE_CODEX_JSON = True
 
 # 啟動時先做 Codex shell 自檢（建議開啟）
-ENABLE_STARTUP_SELFCHECK = os.environ.get("ENABLE_STARTUP_SELFCHECK", "1") == "1"
+ENABLE_STARTUP_SELFCHECK = True
+
+# =========================
+# Git Auto Push Config
+# =========================
+AUTO_PUSH_ON_DONE = True
+GIT_REMOTE_URL = "https://github.com/31182112Ask/agent-workspace.git"
+GIT_BRANCH = "main"
+
+# Git commit author（你提供的資訊）
+GIT_AUTHOR_NAME = "021097xxx"
+GIT_AUTHOR_EMAIL = "021097xxx@gmail.com"
+
+# 直接寫死 token（請替換為你的實際 GitHub PAT）
+GITHUB_TOKEN = "REPLACE_WITH_YOUR_GITHUB_PAT"
+
+# 提交訊息前綴
+GIT_COMMIT_PREFIX = "auto(task)"
+
+# 不想自動 push 的路徑（避免把 logs/artifacts 一起推上去）
+PUSH_EXCLUDE_PATHS = ["logs", "artifacts"]
 
 TASK_FILE = REPO_DIR / "TASK.md"
 AGENTS_FILE = REPO_DIR / "AGENTS.md"
@@ -110,7 +131,6 @@ def run_stream(cmd, cwd=None, log_path=None, prefix="", env=None, shell=False, t
                     f.flush()
 
             if p.poll() is not None:
-                # process ended; flush remaining buffered output
                 remainder = p.stdout.read()
                 if remainder:
                     for extra in remainder.splitlines(True):
@@ -233,6 +253,120 @@ def print_repo_changes():
         print("(none)")
 
 
+def ensure_git_identity_and_remote():
+    """
+    設定 git 作者資訊與 origin remote（不把 token 寫進 remote URL）。
+    """
+    if not git_is_repo():
+        return False, "Not a git repo"
+
+    logs = []
+
+    # 設定作者資訊
+    for cmd in [
+        ["git", "config", "user.name", GIT_AUTHOR_NAME],
+        ["git", "config", "user.email", GIT_AUTHOR_EMAIL],
+    ]:
+        r = run_capture(cmd, cwd=REPO_DIR, timeout=30)
+        logs.append(f"$ {' '.join(cmd)}\n{r.stdout}\n{r.stderr}")
+        if r.returncode != 0:
+            return False, "\n\n".join(logs)
+
+    # 確保 origin 指向指定 repo
+    r = run_capture(["git", "remote", "get-url", "origin"], cwd=REPO_DIR, timeout=30)
+    if r.returncode != 0:
+        r2 = run_capture(["git", "remote", "add", "origin", GIT_REMOTE_URL], cwd=REPO_DIR, timeout=30)
+        logs.append(f"$ git remote add origin <repo-url>\n{r2.stdout}\n{r2.stderr}")
+        if r2.returncode != 0:
+            return False, "\n\n".join(logs)
+    else:
+        current = (r.stdout or "").strip()
+        if current != GIT_REMOTE_URL:
+            r2 = run_capture(["git", "remote", "set-url", "origin", GIT_REMOTE_URL], cwd=REPO_DIR, timeout=30)
+            logs.append(f"$ git remote set-url origin <repo-url>\n{r2.stdout}\n{r2.stderr}")
+            if r2.returncode != 0:
+                return False, "\n\n".join(logs)
+
+    return True, "\n\n".join(logs)
+
+
+def git_commit_and_push(round_idx: int):
+    """
+    自動 commit 並 push 到 GitHub。
+    token 直接來自常量 GITHUB_TOKEN。
+    """
+    if not git_is_repo():
+        return False, "Not a git repo"
+
+    ok, prep_log = ensure_git_identity_and_remote()
+    push_log_path = LOG_DIR / f"round{round_idx:02d}-gitpush-{timestamp()}.log"
+    if not ok:
+        push_log_path.write_text(prep_log, encoding="utf-8")
+        return False, f"Git prepare failed. See {push_log_path.name}"
+
+    token = (GITHUB_TOKEN or "").strip()
+    if not token or token == "REPLACE_WITH_YOUR_GITHUB_PAT":
+        push_log_path.write_text(prep_log + "\n\nMissing/placeholder GITHUB_TOKEN", encoding="utf-8")
+        return False, f"GITHUB_TOKEN is not set to a real value. See {push_log_path.name}"
+
+    logs = [prep_log]
+
+    # stage 所有變更
+    r = run_capture(["git", "add", "-A"], cwd=REPO_DIR, timeout=60)
+    logs.append(f"$ git add -A\n{r.stdout}\n{r.stderr}")
+    if r.returncode != 0:
+        push_log_path.write_text("\n\n".join(logs), encoding="utf-8")
+        return False, f"git add failed. See {push_log_path.name}"
+
+    # 取消 staging 不想推的目錄（logs/artifacts）
+    for p in PUSH_EXCLUDE_PATHS:
+        r = run_capture(["git", "reset", "-q", "HEAD", "--", p], cwd=REPO_DIR, timeout=30)
+        if r.returncode != 0:
+            r2 = run_capture(["git", "restore", "--staged", "--", p], cwd=REPO_DIR, timeout=30)
+            logs.append(f"$ git restore --staged -- {p}\n{r2.stdout}\n{r2.stderr}")
+        else:
+            logs.append(f"$ git reset -q HEAD -- {p}\n{r.stdout}\n{r.stderr}")
+
+    # 檢查 staged 變更
+    r = run_capture(["git", "diff", "--cached", "--name-only"], cwd=REPO_DIR, timeout=30)
+    staged_files = [x for x in (r.stdout or "").splitlines() if x.strip()]
+    logs.append(f"$ git diff --cached --name-only\n{r.stdout}\n{r.stderr}")
+
+    if not staged_files:
+        push_log_path.write_text("\n\n".join(logs), encoding="utf-8")
+        return True, f"No staged changes to push (logs/artifacts excluded). See {push_log_path.name}"
+
+    # commit
+    commit_msg = f"{GIT_COMMIT_PREFIX}: round {round_idx} done ({timestamp()})"
+    r = run_capture(["git", "commit", "-m", commit_msg], cwd=REPO_DIR, timeout=120)
+    logs.append(f"$ git commit -m <msg>\n{r.stdout}\n{r.stderr}")
+    if r.returncode != 0:
+        push_log_path.write_text("\n\n".join(logs), encoding="utf-8")
+        return False, f"git commit failed. See {push_log_path.name}"
+
+    # push（用 extraheader，不把 token 寫入 remote URL）
+    auth_raw = f"x-access-token:{token}".encode("utf-8")
+    auth_b64 = base64.b64encode(auth_raw).decode("utf-8")
+    push_cmd = [
+        "git",
+        "-c", f"http.https://github.com/.extraheader=AUTHORIZATION: basic {auth_b64}",
+        "push",
+        "-u", "origin", f"HEAD:{GIT_BRANCH}",
+    ]
+    r = run_capture(push_cmd, cwd=REPO_DIR, timeout=180)
+
+    logs.append("[push] git push via http.extraheader (token hidden)")
+    logs.append(f"[push stdout]\n{r.stdout}")
+    logs.append(f"[push stderr]\n{r.stderr}")
+
+    push_log_path.write_text("\n\n".join(logs), encoding="utf-8")
+
+    if r.returncode != 0:
+        return False, f"git push failed. See {push_log_path.name}"
+
+    return True, f"Pushed to {GIT_REMOTE_URL} ({GIT_BRANCH}). See {push_log_path.name}"
+
+
 # =========================
 # TASK parsing
 # =========================
@@ -277,7 +411,6 @@ def parse_coding_events_from_jsonl(jsonl_text: str):
         try:
             obj = json.loads(raw)
         except json.JSONDecodeError:
-            # 非 JSON 行，盡量抓 STATUS 標記
             m = re.search(r"STATUS:\s*(DONE|CONTINUE)", raw, flags=re.I)
             if m:
                 status_tag = m.group(1).upper()
@@ -285,12 +418,10 @@ def parse_coding_events_from_jsonl(jsonl_text: str):
 
         t = obj.get("type", "")
 
-        # turn/thread lifecycle
         if t in {"thread.started", "thread.completed", "turn.started", "turn.completed", "turn.failed", "error"}:
             event_lines.append(f"[{t}]")
             continue
 
-        # item events
         if t.startswith("item."):
             item = obj.get("item", {}) or {}
             item_type = item.get("type", "unknown")
@@ -324,7 +455,6 @@ def parse_coding_events_from_jsonl(jsonl_text: str):
 
             continue
 
-        # unknown event types
         event_lines.append(f"[{t or 'unknown'}]")
 
     return status_tag, event_lines
@@ -338,7 +468,6 @@ def codex_shell_selfcheck():
     啟動前驗證 Codex 能在當前環境執行 shell 指令。
     """
     selfcheck_log = LOG_DIR / f"startup-codex-selfcheck-{timestamp()}.log"
-    # 用固定旗標做測試，避免使用者自訂 flags 把自檢搞壞
     test_cmd = [
         "codex",
         "exec",
@@ -417,7 +546,6 @@ Previous feedback from orchestrator:
         if m:
             status_tag = m.group(1).upper()
 
-    # 檢測 sandbox 硬阻塞（避免浪費輪次）
     sandbox_blocked = file_contains_any(out, SANDBOX_BLOCK_PATTERNS)
 
     return {
@@ -435,7 +563,6 @@ def run_acceptance(task_text: str, round_idx: int):
     if not cmds:
         return None, "No ACCEPTANCE bash block found in TASK.md", None
 
-    # 加 set -euo pipefail，避免前一個命令失敗還繼續跑後面驗證
     wrapped_cmds = "set -euo pipefail\n" + cmds.strip() + "\n"
 
     acc_log = LOG_DIR / f"round{round_idx:02d}-acceptance-{timestamp()}.log"
@@ -481,12 +608,11 @@ def main():
 
     print(f"[runner] CODEX_FLAGS={' '.join(CODEX_FLAGS)}")
     print(f"[runner] AUTO_GIT_SYNC={AUTO_GIT_SYNC} SYNC_EACH_ROUND={SYNC_EACH_ROUND}")
+    print(f"[runner] AUTO_PUSH_ON_DONE={AUTO_PUSH_ON_DONE}")
 
-    # 啟動前檢查 Codex shell 執行能力（很重要，避免空轉）
     if ENABLE_STARTUP_SELFCHECK:
         codex_shell_selfcheck()
 
-    # 可選：啟動前同步一次（非破壞）
     if AUTO_GIT_SYNC:
         ok, sync_log = git_sync_non_destructive()
         sync_log_file = LOG_DIR / f"startup-gitsync-{timestamp()}.log"
@@ -504,7 +630,6 @@ def main():
             print("[runner] STOP flag detected (.stop). Exiting.")
             break
 
-        # 可選：每輪同步（不建議，除非你確定 repo 乾淨）
         if AUTO_GIT_SYNC and SYNC_EACH_ROUND:
             ok, sync_log = git_sync_non_destructive()
             sync_log_file = LOG_DIR / f"round{i:02d}-gitsync-{timestamp()}.log"
@@ -529,7 +654,7 @@ def main():
         if patch_path:
             print(f"[runner] patch saved -> {patch_path.name}")
 
-        # 3) 若遇到 sandbox 硬阻塞，提前停止，避免浪費輪次
+        # 3) 若遇到 sandbox 硬阻塞，提前停止
         if codex_result["sandbox_blocked"]:
             print("❌ Sandbox execution is blocked (Landlock).")
             print("[runner] Detected sandbox blocker in Codex output. Stopping early.")
@@ -538,11 +663,20 @@ def main():
             break
 
         # 4) 跑客觀驗收（最終裁決）
-        acc_ok, acc_info, acc_log = run_acceptance(task_text, i)
+        acc_ok, acc_info, _ = run_acceptance(task_text, i)
         if acc_ok is True:
             print("✅ ACCEPTANCE PASSED")
             done = create_done_marker(i)
             print(f"[runner] done marker -> {done}")
+
+            if AUTO_PUSH_ON_DONE:
+                print("[runner] auto-push enabled, committing and pushing...")
+                push_ok, push_msg = git_commit_and_push(i)
+                if push_ok:
+                    print(f"[runner] ✅ {push_msg}")
+                else:
+                    print(f"[runner] ❌ {push_msg}")
+
             break
 
         elif acc_ok is False:
@@ -553,7 +687,6 @@ def main():
             )
         else:
             print("⚠️ No machine-runnable ACCEPTANCE block found.")
-            # 沒有可執行驗收就退化為看 Codex 狀態
             if codex_result["status_tag"] == "DONE":
                 print("[runner] Codex reported DONE, and there is no runnable acceptance block. Stopping.")
                 break
